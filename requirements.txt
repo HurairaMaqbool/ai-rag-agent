@@ -1,0 +1,13 @@
+langchain
+langchain-community
+langchain-groq
+sentence-transformers
+faiss-cpu
+rank-bm25
+pypdf
+fastapi
+uvicorn
+nest-asyncio
+pyngrok
+python-docx
+duckduckgo-search
