@@ -139,17 +139,20 @@ class NumpyFlatL2:
 # ─── Main RAG System ──────────────────────────────────────────────────────────
 class RAGSystem:
 
-    def __init__(self):
-        print("⚙️  Loading embedding model...")
-        for attempt in range(5):
-            try:
-                self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-                break
-            except Exception as e:
-                print(f"   Attempt {attempt + 1}/5 failed: {e}")
-                time.sleep(3)
+    def __init__(self, embed_model=None):
+        if embed_model is not None:
+            self.embed_model = embed_model
         else:
-            raise RuntimeError("Could not load embedding model after 5 attempts.")
+            print("⚙️  Loading embedding model...")
+            for attempt in range(5):
+                try:
+                    self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+                    break
+                except Exception as e:
+                    print(f"   Attempt {attempt + 1}/5 failed: {e}")
+                    time.sleep(3)
+            else:
+                raise RuntimeError("Could not load embedding model after 5 attempts.")
 
         dim = self.embed_model.get_embedding_dimension()
         self.index = NumpyFlatL2(dim)

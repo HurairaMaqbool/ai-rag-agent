@@ -316,8 +316,20 @@ hr {
 </style>
 """, unsafe_allow_html=True)
 
-API_URL = "http://localhost:8000"
 GROQ_KEY_DEFAULT = ""
+
+# ─── Load Embedding Model & RAG System locally ───────────────────────────────
+@st.cache_resource
+def load_shared_embed_model():
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+from rag_engine import RAGSystem
+
+# Initialize session-specific RAG System
+if "rag" not in st.session_state:
+    shared_model = load_shared_embed_model()
+    st.session_state.rag = RAGSystem(embed_model=shared_model)
 
 # ─── Initialize session state ──────────────────────────────────────────────────
 if "messages" not in st.session_state:
@@ -327,19 +339,8 @@ if "doc_count" not in st.session_state:
 if "query_count" not in st.session_state:
     st.session_state.query_count = 0
 
-# ─── Real backend health check ─────────────────────────────────────────────────
-@st.cache_data(ttl=10)
-def check_backend():
-    try:
-        r = requests.get(f"{API_URL}/health", timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            return True, data.get("docs_indexed", 0)
-    except Exception:
-        pass
-    return False, 0
-
-backend_ok, indexed_docs = check_backend()
+# Engine is always online locally
+backend_ok = True
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -400,22 +401,25 @@ with st.sidebar:
     )
 
     if st.button("⚡ Process & Index Document"):
-        if not backend_ok:
-            st.error("Backend is offline. Start FastAPI first.")
-        elif uploaded_file is not None:
+        if uploaded_file is not None:
             with st.spinner("Embedding document into neural index..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                import tempfile
+                suffix = os.path.splitext(uploaded_file.name)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                    temp_file.write(uploaded_file.getvalue())
+                    temp_file_path = temp_file.name
+                
                 try:
-                    response = requests.post(f"{API_URL}/upload", files=files, timeout=120)
-                    if response.status_code == 200:
-                        st.session_state.doc_count += 1
-                        st.toast(f"✅ {uploaded_file.name} indexed successfully!", icon="📄")
-                        time.sleep(0.5)
-                        st.rerun()
-                    else:
-                        st.error(f"Processing failed: {response.text}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Backend offline. Start the FastAPI server.")
+                    status_msg = st.session_state.rag.add_document(temp_file_path, uploaded_file.name)
+                    st.session_state.doc_count = len(set(c.get("source_file", "") for c in st.session_state.rag.chunks))
+                    st.toast(status_msg, icon="📄")
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Processing failed: {e}")
+                finally:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
         else:
             st.warning("Please upload a file first.")
 
@@ -484,31 +488,16 @@ if prompt := st.chat_input("Ask about your documents, search the web, or solve m
 
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        if not backend_ok:
-            message_placeholder.error("⚠️ Backend is offline. Please start `python main.py` first.")
-        else:
-            with st.spinner("Thinking..."):
-                try:
-                    current_api_key = os.environ.get("GROQ_API_KEY", GROQ_KEY_DEFAULT)
-                    response = requests.post(
-                        f"{API_URL}/chat",
-                        json={"question": prompt, "api_key": current_api_key},
-                        timeout=90
-                    )
-                    if response.status_code == 200:
-                        answer = response.json().get("answer", "⚠️ Empty response from server.")
-                        message_placeholder.markdown(answer)
-                        st.session_state.messages.append({"role": "assistant", "content": answer})
-                    else:
-                        try:
-                            detail = response.json().get("detail", response.text)
-                        except Exception:
-                            detail = response.text
-                        message_placeholder.error(f"⚠️ Server error {response.status_code}: {detail}")
-                except requests.exceptions.ConnectionError:
-                    message_placeholder.error("⚠️ Cannot reach Nexus Core. Start `python main.py`.")
-                except requests.exceptions.Timeout:
-                    message_placeholder.warning("⏳ Request timed out. Try a shorter question or check your connection.")
-                except Exception as e:
-                    message_placeholder.error(f"Unexpected error: {e}")
+        with st.spinner("Thinking..."):
+            try:
+                current_api_key = os.environ.get("GROQ_API_KEY", GROQ_KEY_DEFAULT)
+                if current_api_key:
+                    os.environ["GROQ_API_KEY"] = current_api_key
+                
+                # Direct local call to the embedded RAG System
+                answer = st.session_state.rag.chat(prompt)
+                message_placeholder.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+            except Exception as e:
+                message_placeholder.error(f"⚠️ Error: {e}")
 
